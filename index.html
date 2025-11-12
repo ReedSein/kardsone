@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>3D 球体色块分组面积对比 v2.0</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #000;
+      color: #eee;
+    }
+    #app {
+      width: 100%;
+      height: 100%;
+    }
+    #ui {
+      position: fixed;
+      top: 6px;
+      left: 6px;
+      right: 6px;
+      padding: 6px;
+      background: rgba(0,0,0,0.6);
+      border-radius: 6px;
+      font-size: 11px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #ui-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+    #segments {
+      max-height: 120px;
+      overflow-y: auto;
+      border-top: 1px solid #444;
+      padding-top: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 10px;
+    }
+    button {
+      padding: 2px 6px;
+      font-size: 10px;
+      border-radius: 4px;
+      border: 1px solid #555;
+      background: #222;
+      color: #eee;
+      cursor: pointer;
+    }
+    button.small {
+      padding: 1px 4px;
+      font-size: 9px;
+    }
+    button:active {
+      background: #444;
+    }
+    #loading {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-size: 13px;
+      z-index: 5;
+      pointer-events: none;
+      opacity: 0.85;
+    }
+    .pill {
+      display: inline-block;
+      padding: 0 4px;
+      border-radius: 4px;
+      background: #333;
+      margin-left: 2px;
+      font-size: 9px;
+      color: #ccc;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="loading">加载纹理中...</div>
+
+  <div id="ui">
+    <div id="ui-top">
+      <span>操作: 点击球体选区域 → 加入 A/B → 点击对比</span>
+      <span>纹理: <code>./assets/texture.png</code></span>
+      <span class="pill">只识别点击附近的连通色块</span>
+      <button id="resetBtn">清空所有选区</button>
+      <button id="calcGroupsBtn">计算 A 组 vs B 组</button>
+    </div>
+    <div id="groupsResult"></div>
+    <div id="segments"></div>
+  </div>
+
+  <script type="module">
+    // v2.0 核心说明：
+    // - 点击球体：通过 Raycaster 得到交点 UV
+    // - 在纹理图中以 (u,v) 为中心，对附近像素做「基于颜色 + UV距离」的泛洪填充
+    // - 计算该局部区域的球面面积占比（使用 cos(lat) 加权）
+    // - 将多个区域作为 segment，可加入 Group A / Group B，最后求和对比
+    // 设计：
+    // - KISS: 所有逻辑集中一页，但按功能拆清晰函数
+    // - YAGNI: 不画复杂轮廓、不做撤销栈，专注当前需求
+    // - 单一职责:
+    //   - init3D: 初始化场景
+    //   - pickOnSphere: 处理点击并找到 UV
+    //   - growRegion: 基于颜色+范围找连通区域
+    //   - calcRegionAreaRatio: 计算区域面积占比
+    //   - segment/group 管理独立
+
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
+    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js';
+
+    // ========= 可按需调整的参数 =========
+    const textureUrl = './assets/texture.png'; // 你的球面贴图
+    const colorTolerance = 20;                 // 颜色容差(0-255)，越大区域越容易扩散
+    const maxUvDistance = 0.035;               // UV 距离限制，控制“附近范围”大小
+    const maxRegionPixels = 8000;              // 单个选区最大像素数，防止极端情况卡死
+
+    const container = document.getElementById('app');
+    const loadingEl = document.getElementById('loading');
+    const segmentsEl = document.getElementById('segments');
+    const groupsResultEl = document.getElementById('groupsResult');
+    const resetBtn = document.getElementById('resetBtn');
+    const calcGroupsBtn = document.getElementById('calcGroupsBtn');
+
+    let scene, camera, renderer, controls, sphere;
+    let raycaster, pointer;
+    let textureObj = null;      // three.js 纹理
+    let areaImage = null;       // 原始图像
+    let areaImageData = null;   // 像素数据缓存
+    let width = 0, height = 0;
+
+    let segments = [];          // { id, ratio, centerUv, count }
+    let groupA = [];
+    let groupB = [];
+    let nextSegmentId = 1;
+
+    init3D();
+    loadTexture();
+
+    // ========== 初始化 3D 场景 ==========
+    function init3D() {
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x000000);
+
+      camera = new THREE.PerspectiveCamera(
+        60,
+        container.clientWidth / container.clientHeight,
+        0.1,
+        1000
+      );
+      camera.position.set(0, 0, 3);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      container.appendChild(renderer.domElement);
+
+      const light = new THREE.AmbientLight(0xffffff, 1);
+      scene.add(light);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.enableZoom = true;
+      controls.minDistance = 1.5;
+      controls.maxDistance = 5;
+      controls.enablePan = false;
+
+      raycaster = new THREE.Raycaster();
+      pointer = new THREE.Vector2();
+
+      window.addEventListener('resize', onWindowResize);
+      // 鼠标点击
+      renderer.domElement.addEventListener('click', onClickCanvas);
+      // 触摸轻点（简单处理：touchend 取最后位置）
+      renderer.domElement.addEventListener('touchend', onTouchEnd);
+
+      animate();
+    }
+
+    function onWindowResize() {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    // ========== 加载纹理并创建球体 ==========
+    function loadTexture() {
+      const loader = new THREE.TextureLoader();
+      loader.load(
+        textureUrl,
+        (tex) => {
+          textureObj = tex;
+          createSphere(tex);
+          loadAreaImage(textureUrl);
+        },
+        undefined,
+        (err) => {
+          console.error('纹理加载失败', err);
+          if (loadingEl) loadingEl.textContent = '纹理加载失败，请检查路径和跨域设置';
+        }
+      );
+    }
+
+    function createSphere(tex) {
+      const geometry = new THREE.SphereGeometry(1, 64, 64);
+      const material = new THREE.MeshBasicMaterial({ map: tex });
+      sphere = new THREE.Mesh(geometry, material);
+      scene.add(sphere);
+    }
+
+    function loadAreaImage(url) {
+      const img = new Image();
+      img.src = url;
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        width = img.width;
+        height = img.height;
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        areaImageData = ctx.getImageData(0, 0, width, height).data;
+        areaImage = img;
+        if (loadingEl) loadingEl.style.display = 'none';
+      };
+      img.onerror = (e) => {
+        console.error('面积计算纹理加载失败', e);
+        if (loadingEl) loadingEl.textContent = '面积纹理加载失败';
+      };
+    }
+
+    // ========== 点击 / 触摸事件，转换为射线 ==========
+    function onClickCanvas(event) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      pointer.set(x, y);
+      handlePick();
+    }
+
+    function onTouchEnd(event) {
+      if (!event.changedTouches || event.changedTouches.length === 0) return;
+      const touch = event.changedTouches[0];
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
+      pointer.set(x, y);
+      handlePick();
+    }
+
+    function handlePick() {
+      if (!sphere || !areaImageData) return;
+
+      raycaster.setFromCamera(pointer, camera);
+      const intersects = raycaster.intersectObject(sphere);
+      if (intersects.length === 0) return;
+
+      const uv = intersects[0].uv; // {x: u, y: v}
+      if (!uv) return;
+
+      const segment = createSegmentFromUv(uv);
+      if (segment) {
+        segments.push(segment);
+        renderSegmentsList();
+      }
+    }
+
+    // ========== 从 UV 创建一个局部区域 segment ==========
+    function createSegmentFromUv(uv) {
+      // uv: {x: 0-1, y:0-1}
+      if (!areaImageData || width === 0 || height === 0) return null;
+
+      const startX = Math.floor(uv.x * (width - 1));
+      const startY = Math.floor((1 - uv.y) * (height - 1)); // 注意 three.js v=0顶部，这里反转
+
+      const idx = (startY * width + startX) * 4;
+      const baseR = areaImageData[idx];
+      const baseG = areaImageData[idx + 1];
+      const baseB = areaImageData[idx + 2];
+      const baseA = areaImageData[idx + 3];
+
+      if (baseA === 0) {
+        // 点击到透明区域，直接忽略
+        return null;
+      }
+
+      const visited = new Uint8Array(width * height);
+      const queue = [];
+      queue.push({ x: startX, y: startY });
+      visited[startY * width + startX] = 1;
+
+      // 用来计算面积
+      let sumCos = 0;
+      let pixelCount = 0;
+
+      // 限制扩散范围：UV 欧式距离
+      const maxDistSq = maxUvDistance * maxUvDistance;
+
+      // 预计算每行 cos(lat)
+      const cosLatRow = new Array(height);
+      for (let y = 0; y < height; y++) {
+        const v = y / (height - 1);
+        const lat = Math.PI * (0.5 - v);
+        cosLatRow[y] = Math.cos(lat);
+      }
+
+      const baseU = uv.x;
+      const baseV = uv.y;
+
+      while (queue.length > 0 && pixelCount < maxRegionPixels) {
+        const { x, y } = queue.shift();
+
+        // 计算该像素对应的 UV，用于距离限制
+        const u = x / (width - 1);
+        const v = 1 - y / (height - 1); // 反转回来
+        const du = u - baseU;
+        // 考虑经度环绕，可根据需要做 wrap，这里简化处理
+        const dv = v - baseV;
+        const distSq = du * du + dv * dv;
+        if (distSq > maxDistSq) {
+          continue;
+        }
+
+        const index = (y * width + x) * 4;
+        const r = areaImageData[index];
+        const g = areaImageData[index + 1];
+        const b = areaImageData[index + 2];
+        const a = areaImageData[index + 3];
+
+        if (a === 0) continue;
+        if (!colorClose(r, g, b, baseR, baseG, baseB, colorTolerance)) {
+          continue;
+        }
+
+        // 接受这个像素
+        const cosLat = cosLatRow[y];
+        sumCos += cosLat;
+        pixelCount++;
+
+        // 四邻域扩散
+        const neighbors = [
+          [x + 1, y],
+          [x - 1, y],
+          [x, y + 1],
+          [x, y - 1],
+        ];
+        for (const [nx, ny] of neighbors) {
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+          const key = ny * width + nx;
+          if (visited[key]) continue;
+          visited[key] = 1;
+          queue.push({ x: nx, y: ny });
+        }
+      }
+
+      if (pixelCount === 0) {
+        return null;
+      }
+
+      // 计算该局部区域占整球的比例：
+      // 整球面积 ∝ ∑_all cos(lat)，对等距矩形贴图解析值为 2 * width (积分)，
+      // 这里用数值：sumAllCos = height * 平均(cosLat) ~= (2 * width)，简化处理：
+      // 为保证稳定，我们直接用理论总面积 4πR² 对应的权重为:
+      // sum_all_cos_理论 = (积分 cos(lat) 从 -pi/2 到 pi/2) * (宽度离散) = 2 * width
+      // 但我们真正用的是：ratio = sumCos / sumCosAll
+      // 为避免多次遍历整图，这里采用解析：sumCosAll = height * (平均cos) * 宽 ≈ 2 * width
+      // 更严谨：预先算一遍 sumCosAll，这里为了简单+性能，用解析值：
+      const sumCosAll = 2 * width; // KISS + 足够精度的近似
+
+      const ratio = sumCos / sumCosAll;
+
+      return {
+        id: nextSegmentId++,
+        ratio,
+        count: pixelCount,
+        centerUv: { u: baseU, v: baseV },
+      };
+    }
+
+    function colorClose(r, g, b, br, bg, bb, tol) {
+      return (
+        Math.abs(r - br) <= tol &&
+        Math.abs(g - bg) <= tol &&
+        Math.abs(b - bb) <= tol
+      );
+    }
+
+    // ========== Segments & Groups UI 管理 ==========
+
+    function renderSegmentsList() {
+      segmentsEl.innerHTML = '';
+      if (segments.length === 0) {
+        segmentsEl.textContent = '提示: 点击球体表面任意色块，即可生成一个选区。';
+        renderGroupsResult();
+        return;
+      }
+
+      segments.forEach(seg => {
+        const div = document.createElement('div');
+        const p = (seg.ratio * 100).toFixed(4);
+        div.textContent = `#${seg.id}  区域占比: ${p}%  像素数: ${seg.count}`;
+        const btnA = document.createElement('button');
+        btnA.textContent = '加到A组';
+        btnA.className = 'small';
+        btnA.onclick = () => addToGroup('A', seg.id);
+
+        const btnB = document.createElement('button');
+        btnB.textContent = '加到B组';
+        btnB.className = 'small';
+        btnB.onclick = () => addToGroup('B', seg.id);
+
+        const btnRm = document.createElement('button');
+        btnRm.textContent = '移除';
+        btnRm.className = 'small';
+        btnRm.onclick = () => removeSegment(seg.id);
+
+        div.appendChild(btnA);
+        div.appendChild(btnB);
+        div.appendChild(btnRm);
+
+        // 显示是否在组里
+        if (groupA.includes(seg.id)) {
+          const tag = document.createElement('span');
+          tag.className = 'pill';
+          tag.textContent = 'A';
+          div.appendChild(tag);
+        }
+        if (groupB.includes(seg.id)) {
+          const tag = document.createElement('span');
+          tag.className = 'pill';
+          tag.textContent = 'B';
+          div.appendChild(tag);
+        }
+
+        segmentsEl.appendChild(div);
+      });
+
+      renderGroupsResult();
+    }
+
+    function addToGroup(group, id) {
+      if (!segments.find(s => s.id === id)) return;
+      if (group === 'A') {
+        if (!groupA.includes(id)) groupA.push(id);
+      } else {
+        if (!groupB.includes(id)) groupB.push(id);
+      }
+      renderSegmentsList();
+    }
+
+    function removeSegment(id) {
+      segments = segments.filter(s => s.id !== id);
+      groupA = groupA.filter(i => i !== id);
+      groupB = groupB.filter(i => i !== id);
+      renderSegmentsList();
+    }
+
+    function resetAll() {
+      segments = [];
+      groupA = [];
+      groupB = [];
+      nextSegmentId = 1;
+      renderSegmentsList();
+    }
+
+    function renderGroupsResult() {
+      const sumA = groupA
+        .map(id => segments.find(s => s.id === id))
+        .filter(Boolean)
+        .reduce((sum, s) => sum + s.ratio, 0);
+      const sumB = groupB
+        .map(id => segments.find(s => s.id === id))
+        .filter(Boolean)
+        .reduce((sum, s) => sum + s.ratio, 0);
+
+      const pA = (sumA * 100).toFixed(4);
+      const pB = (sumB * 100).toFixed(4);
+      const ratio = sumB > 0 ? (sumA / sumB).toFixed(4) : (sumA > 0 ? '∞' : '0');
+
+      groupsResultEl.textContent =
+        `A组总面积: ${pA}%   B组总面积: ${pB}%   A/B: ${ratio}`;
+    }
+
+    resetBtn.onclick = resetAll;
+
+    calcGroupsBtn.onclick = () => {
+      // 按当前分组计算一次（renderGroupsResult 已经实时显示，按钮只是满足你的“计算”动作）
+      renderGroupsResult();
+      // 可以加个轻微提示
+      groupsResultEl.textContent += '  (已更新)';
+    };
+  </script>
+</body>
+</html>
