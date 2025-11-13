@@ -1,518 +1,380 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport"
-        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>3D 球体色块分组面积对比 v2.0</title>
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #000;
-      color: #eee;
+import React, { useState, useEffect, useRef } from 'react';
+import { Terminal, Activity, Brain, Eye, Zap, MessageSquare, Heart, Shield } from 'lucide-react';
+
+// --- 类型定义 ---
+
+type SkillType = 'intellect' | 'psyche' | 'physique' | 'motorics' | 'general' | 'narrator';
+
+interface DialoguePart {
+  id: string;
+  speaker?: string;
+  skillType?: SkillType; 
+  text: string; // 支持简单的富文本标记：*斜体* **加粗**
+  isOption?: boolean; // 标记这一条是否是用户选过的选项
+}
+
+interface Option {
+  label: string;
+  nextId: string;
+  skillCheck?: {
+    skill: string;
+    difficulty: string; // e.g., "困难 [成功]"
+    type: SkillType;
+  };
+}
+
+interface StoryNode {
+  id: string;
+  parts: DialoguePart[];
+  options: Option[];
+}
+
+// --- 样式常量 ---
+
+const COLORS = {
+  intellect: 'text-blue-400', // 逻辑思维，博学多才
+  psyche: 'text-purple-400',  // 内陆帝国，同理心
+  physique: 'text-red-400',   // 半影，食髓知味
+  motorics: 'text-yellow-400', // 五感发达
+  narrator: 'text-slate-300', // 旁白
+  general: 'text-gray-100',   // 普通对话
+  background: 'bg-slate-900',
+  panel: 'bg-slate-800',
+  optionHover: 'hover:bg-slate-700',
+};
+
+// --- 剧本数据 ---
+
+const STORY_NODES: Record<string, StoryNode> = {
+  start: {
+    id: 'start',
+    parts: [
+      { id: 's1', speaker: '知觉', skillType: 'motorics', text: '气味：消毒水。烧焦的蛋白质。以及一种被称为“活着”的陈腐味道。' },
+      { id: 's2', speaker: '内陆帝国', skillType: 'psyche', text: '这里是后台休息室。演出还没有结束，但是灯光师已经死了。你躺在一张看起来像是一块巨大洁白方糖的病床上。' },
+      { id: 's3', speaker: '旁白', skillType: 'narrator', text: '你睁开眼睛。圣凯利综合大学附属医院的天花板上有三个霉点，它们的排列形状像极了阿诺德在那辆被抢走的自行车上贴的贴纸。' },
+      { id: 's4', speaker: '逻辑思维', skillType: 'intellect', text: '身体完整性检查：四肢在场。除了一些浅表烧伤和脑震荡，你奇迹般地毫发无损。这在统计学上是0.03%的概率。' },
+    ],
+    options: [
+      { label: '“阿诺德？埃莉诺？”', nextId: 'ask_friends' },
+      { label: '闭上眼睛，试图回到黑暗中。', nextId: 'close_eyes', skillCheck: { skill: '意志力', difficulty: '困难 [失败]', type: 'psyche' } },
+      { label: '检查自己的身体。', nextId: 'check_body' },
+    ]
+  },
+  ask_friends: {
+    id: 'ask_friends',
+    parts: [
+      { id: 'af1', speaker: '你', text: '“阿诺德？埃莉诺？”' },
+      { id: 'af2', speaker: '旁白', skillType: 'narrator', text: '你的声音听起来像是两块生锈的铁片在摩擦。房间里只有一台生命体征监测仪在有节奏地鸣叫，像是一只电子蟋蟀。' },
+      { id: 'af3', speaker: '同理心', skillType: 'psyche', text: '你感觉到了某种巨大的空缺。不是物理上的。宇宙在这里坍塌了一角，那是原本属于两个毛茸茸的、温暖的生物占据的空间。现在那里只有冷空气。' },
+      { id: 'af4', speaker: '半影', skillType: 'physique', text: '他们不在这里。他们在那里。在那个充满火光、尖叫和贝兰加洛家族阴影的广场上。或者是碎片。' },
+    ],
+    options: [
+      { label: '回想最后一刻。', nextId: 'flashback' },
+      { label: '从床上坐起来。', nextId: 'sit_up' },
+    ]
+  },
+  close_eyes: {
+    id: 'close_eyes',
+    parts: [
+      { id: 'ce1', speaker: '你', isOption: true, text: '闭上眼睛，试图回到黑暗中。' },
+      { id: 'ce2', speaker: '意志力', skillType: 'psyche', text: '【困难：失败】 做不到。黑暗不再是安宁的幕布，而是放映机。只要你切断视觉输入，那个瞬间就会在大脑皮层上重播。' },
+      { id: 'ce3', speaker: '视觉计算', skillType: 'intellect', text: '重播开始：白光。气压骤降。阿诺德回头，他的嘴唇刚刚为了说出一个笑话而翘起——然后物理法则失效了。人体变成了几何学问题。' },
+    ],
+    options: [
+      { label: '尖叫。', nextId: 'scream' },
+      { label: '这太荒谬了。', nextId: 'absurdity' },
+    ]
+  },
+  check_body: {
+    id: 'check_body',
+    parts: [
+      { id: 'cb1', speaker: '你', isOption: true, text: '检查自己的身体。' },
+      { id: 'cb2', speaker: '生化限度', skillType: 'physique', text: '你抬起手。这是一只属于犬科兽人的手，覆盖着深红间白的毛发。它在颤抖，频率大约是每秒5次。' },
+      { id: 'cb3', speaker: '旁白', skillType: 'narrator', text: '这双手曾经被阿诺德握住，被埃莉诺轻轻拍打。现在它握着虚空。医生说你很快就能完全恢复。你的机体功能完好。' },
+      { id: 'cb4', speaker: '概念化', skillType: 'intellect', text: '这真是一个绝妙的讽刺剧。那个被认为“性取向不明”、“潜在杀人狂”的伊恩·凯利活下来了。而那两个总是笑着说“我们会给你撑腰”的傻瓜，变成了新闻里的伤亡数字。' },
+    ],
+    options: [
+      { label: '我想吐。', nextId: 'sickness' },
+      { label: '等待结局。', nextId: 'waiting' },
+    ]
+  },
+  flashback: {
+    id: 'flashback',
+    parts: [
+      { id: 'fb1', speaker: '内陆帝国', skillType: 'psyche', text: '不要去那里。那里是一片燃烧的森林。米拉特的幽灵在树梢上大笑。' },
+      { id: 'fb2', speaker: '强身健体', skillType: 'physique', text: '爆炸波带来的冲击感还残留在肋骨之间。你记得那种推背感，比任何过山车都要猛烈。然后是热浪。' },
+      { id: 'fb3', speaker: '旁白', skillType: 'narrator', text: '记者史密斯的声音还在耳边回荡：“十万个米拉特，十万个贝兰加洛……”然后世界变成了静音模式。你看见埃莉诺的长发——那头风一吹就会飘起来的白发——瞬间变成了火炬。' },
+    ],
+    options: [
+      { label: '“这不公平。”', nextId: 'unfair' },
+      { label: '“这很合理。”', nextId: 'absurdity' },
+    ]
+  },
+  absurdity: {
+    id: 'absurdity',
+    parts: [
+      { id: 'ab1', speaker: '你', text: '“这太荒谬了。”' },
+      { id: 'ab2', speaker: '修辞学', skillType: 'intellect', text: '是的，荒谬。存在主义的经典教科书案例。并没有什么命运的宏大叙事，只有炸药、引信和糟糕的站位。' },
+      { id: 'ab3', speaker: '旁白', skillType: 'narrator', text: '你记得阿诺德被抢劫后缝了六针的脸，他当时还笑着说“以其人之道还治其人之身”。他没有机会再治其人之身了。' },
+      { id: 'ab4', speaker: '疑神疑鬼', skillType: 'motorics', text: '也许这是某种清理？那些人类在歌剧院唱的圣歌，也许这就是他们上帝的回应？不，这只是概率的随机呕吐。' },
+    ],
+    options: [
+      { label: '看向窗外。', nextId: 'look_window' },
+    ]
+  },
+  scream: {
+    id: 'scream',
+    parts: [
+      { id: 'sc1', speaker: '你', text: '尖叫。' },
+      { id: 'sc2', speaker: '旁白', skillType: 'narrator', text: '你张开嘴，但没有声音发出来。只有一口干涩的气流冲过你的喉咙。你的声带似乎因为拒绝承认现实而罢工了。' },
+      { id: 'sc3', speaker: '平心静气', skillType: 'intellect', text: '保持冷静。尖叫没有用。尖叫不能把弹片从他们的身体里吸出来。尖叫不能让时间倒流回那个平静的傍晚。' },
+    ],
+    options: [
+      { label: '躺回去。', nextId: 'waiting' },
+    ]
+  },
+  look_window: {
+    id: 'look_window',
+    parts: [
+      { id: 'lw1', speaker: '你', text: '看向窗外。' },
+      { id: 'lw2', speaker: '知觉', skillType: 'motorics', text: '悉尼的夜晚。霓虹灯在远处的云层下闪烁，像是电子病毒。你能看见圣凯利大学的方向，那里现在应该已经被封锁线围得水泄不通。' },
+      { id: 'lw3', speaker: '大局观', skillType: 'intellect', text: '明天新闻会怎么说？“兽人恐怖袭击”？还是“针对兽人的屠杀”？无所谓了。白令贸易协定的股价会波动，索沃科夫会发表声明。' },
+      { id: 'lw4', speaker: '内陆帝国', skillType: 'psyche', text: '而你，伊恩·凯利，你是被遗留下来的那个。你是故事里那个多余的注脚。' },
+    ],
+    options: [
+      { label: '期待死亡。', nextId: 'death_wish' },
+    ]
+  },
+  death_wish: {
+    id: 'death_wish',
+    parts: [
+      { id: 'dw1', speaker: '旁白', skillType: 'narrator', text: '你以前想过很多次自己会怎么死。也许是在亚马逊雨林里烂掉，也许是在某个隔间里过劳死。' },
+      { id: 'dw2', speaker: '你', text: '“真荒谬。”' },
+      { id: 'dw3', speaker: '旁白', skillType: 'narrator', text: '你明明十天前还和那两只可爱的家伙躺在一起，互相舔舐着对方的脸。那是某种神圣的时刻，现在它变成了诅咒。' },
+      { id: 'dw4', speaker: '同理心', skillType: 'psyche', text: '阿诺德的微笑。埃莉诺的白发。它们不是记忆，它们是幽灵，正坐在你的床头，等着你加入他们。' },
+      { id: 'dw5', speaker: '决断', skillType: 'physique', text: '现在，伊恩，你感觉到了吗？那种前所未有的轻松。你不再害怕那些红色的油漆字，不再害怕那些议论。你只是在等待。' },
+      { id: 'dw6', speaker: '结束', skillType: 'narrator', text: '伊恩·凯利闭上了眼睛。他开始期待那一刻。' },
+    ],
+    options: [
+      { label: '重新开始回忆', nextId: 'start' }
+    ]
+  },
+  sickness: {
+    id: 'sickness',
+    parts: [
+      { id: 'si1', speaker: '强身健体', skillType: 'physique', text: '胃部一阵痉挛。那是生理性的厌恶。对这个世界的物理结构感到恶心。' },
+      { id: 'si2', speaker: '内陆帝国', skillType: 'psyche', text: '把他吐出来。把这个充满仇恨、关税、核弹头和被砸烂的挡风玻璃的世界吐出来。' },
+    ],
+    options: [
+        { label: '深呼吸。', nextId: 'absurdity'}
+    ]
+  },
+  unfair: {
+    id: 'unfair',
+    parts: [
+      { id: 'un1', speaker: '你', text: '“这不公平。”' },
+      { id: 'un2', speaker: '逻辑思维', skillType: 'intellect', text: '公平是人类发明的一个概念，用来掩盖混沌的本质。一颗炸弹没有道德判断，它只有化学反应。' },
+      { id: 'un3', speaker: '半影', skillType: 'physique', text: '但是它疼。即使你没有受伤，它也疼得要命。' },
+    ],
+    options: [
+       { label: '等待结局。', nextId: 'waiting' }
+    ]
+  },
+  waiting: {
+    id: 'waiting',
+    parts: [
+       { id: 'wa1', speaker: '旁白', skillType: 'narrator', text: '你躺回枕头上。枕头很软，像是一个令人窒息的拥抱。' },
+       { id: 'wa2', speaker: '内陆帝国', skillType: 'psyche', text: '他们在等你。在另一个没有贝兰加洛家族，没有白令协定的地方。那里只有无尽的自行车道和永远不会被打断的桌游。' },
+    ],
+    options: [
+        { label: '闭上眼，期待那一刻。', nextId: 'death_wish' }
+    ]
+  }
+};
+
+// --- 组件 ---
+
+const SkillIcon = ({ type }: { type: SkillType }) => {
+  switch (type) {
+    case 'intellect': return <Brain className="w-5 h-5 text-blue-400" />;
+    case 'psyche': return <Heart className="w-5 h-5 text-purple-400" />;
+    case 'physique': return <Activity className="w-5 h-5 text-red-400" />;
+    case 'motorics': return <Eye className="w-5 h-5 text-yellow-400" />;
+    case 'narrator': return <Terminal className="w-5 h-5 text-slate-400" />;
+    default: return <MessageSquare className="w-5 h-5 text-gray-400" />;
+  }
+};
+
+export default function DiscoElysiumInteractive() {
+  const [history, setHistory] = useState<DialoguePart[]>([]);
+  const [currentNodeId, setCurrentNodeId] = useState<string>('start');
+  const [isTyping, setIsTyping] = useState(false);
+  
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 初始化加载
+  useEffect(() => {
+    pushNodeToHistory('start', true);
+  }, []);
+
+  // 自动滚动
+  useEffect(() => {
+    if (bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-    #app {
-      width: 100%;
-      height: 100%;
-    }
-    #ui {
-      position: fixed;
-      top: 6px;
-      left: 6px;
-      right: 6px;
-      padding: 6px;
-      background: rgba(0,0,0,0.6);
-      border-radius: 6px;
-      font-size: 11px;
-      z-index: 10;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    #ui-top {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px;
-    }
-    #segments {
-      max-height: 120px;
-      overflow-y: auto;
-      border-top: 1px solid #444;
-      padding-top: 4px;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      font-size: 10px;
-    }
-    button {
-      padding: 2px 6px;
-      font-size: 10px;
-      border-radius: 4px;
-      border: 1px solid #555;
-      background: #222;
-      color: #eee;
-      cursor: pointer;
-    }
-    button.small {
-      padding: 1px 4px;
-      font-size: 9px;
-    }
-    button:active {
-      background: #444;
-    }
-    #loading {
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      color: #fff;
-      font-size: 13px;
-      z-index: 5;
-      pointer-events: none;
-      opacity: 0.85;
-    }
-    .pill {
-      display: inline-block;
-      padding: 0 4px;
-      border-radius: 4px;
-      background: #333;
-      margin-left: 2px;
-      font-size: 9px;
-      color: #ccc;
-    }
-  </style>
-</head>
-<body>
-  <div id="app"></div>
-  <div id="loading">加载纹理中...</div>
+  }, [history]);
 
-  <div id="ui">
-    <div id="ui-top">
-      <span>操作: 点击球体选区域 → 加入 A/B → 点击对比</span>
-      <span>纹理: <code>./assets/texture.png</code></span>
-      <span class="pill">只识别点击附近的连通色块</span>
-      <button id="resetBtn">清空所有选区</button>
-      <button id="calcGroupsBtn">计算 A 组 vs B 组</button>
-    </div>
-    <div id="groupsResult"></div>
-    <div id="segments"></div>
-  </div>
+  const pushNodeToHistory = (nodeId: string, clearPreviousOptions = false) => {
+    const node = STORY_NODES[nodeId];
+    if (!node) return;
 
-  <script type="module">
-    // v2.0 核心说明：
-    // - 点击球体：通过 Raycaster 得到交点 UV
-    // - 在纹理图中以 (u,v) 为中心，对附近像素做「基于颜色 + UV距离」的泛洪填充
-    // - 计算该局部区域的球面面积占比（使用 cos(lat) 加权）
-    // - 将多个区域作为 segment，可加入 Group A / Group B，最后求和对比
-    // 设计：
-    // - KISS: 所有逻辑集中一页，但按功能拆清晰函数
-    // - YAGNI: 不画复杂轮廓、不做撤销栈，专注当前需求
-    // - 单一职责:
-    //   - init3D: 初始化场景
-    //   - pickOnSphere: 处理点击并找到 UV
-    //   - growRegion: 基于颜色+范围找连通区域
-    //   - calcRegionAreaRatio: 计算区域面积占比
-    //   - segment/group 管理独立
-
-    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js';
-    import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/controls/OrbitControls.js';
-
-    // ========= 可按需调整的参数 =========
-    const textureUrl = './assets/texture.png'; // 你的球面贴图
-    const colorTolerance = 20;                 // 颜色容差(0-255)，越大区域越容易扩散
-    const maxUvDistance = 0.035;               // UV 距离限制，控制“附近范围”大小
-    const maxRegionPixels = 8000;              // 单个选区最大像素数，防止极端情况卡死
-
-    const container = document.getElementById('app');
-    const loadingEl = document.getElementById('loading');
-    const segmentsEl = document.getElementById('segments');
-    const groupsResultEl = document.getElementById('groupsResult');
-    const resetBtn = document.getElementById('resetBtn');
-    const calcGroupsBtn = document.getElementById('calcGroupsBtn');
-
-    let scene, camera, renderer, controls, sphere;
-    let raycaster, pointer;
-    let textureObj = null;      // three.js 纹理
-    let areaImage = null;       // 原始图像
-    let areaImageData = null;   // 像素数据缓存
-    let width = 0, height = 0;
-
-    let segments = [];          // { id, ratio, centerUv, count }
-    let groupA = [];
-    let groupB = [];
-    let nextSegmentId = 1;
-
-    init3D();
-    loadTexture();
-
-    // ========== 初始化 3D 场景 ==========
-    function init3D() {
-      scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x000000);
-
-      camera = new THREE.PerspectiveCamera(
-        60,
-        container.clientWidth / container.clientHeight,
-        0.1,
-        1000
-      );
-      camera.position.set(0, 0, 3);
-
-      renderer = new THREE.WebGLRenderer({ antialias: true });
-      renderer.setPixelRatio(window.devicePixelRatio || 1);
-      renderer.setSize(container.clientWidth, container.clientHeight);
-      container.appendChild(renderer.domElement);
-
-      const light = new THREE.AmbientLight(0xffffff, 1);
-      scene.add(light);
-
-      controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.05;
-      controls.enableZoom = true;
-      controls.minDistance = 1.5;
-      controls.maxDistance = 5;
-      controls.enablePan = false;
-
-      raycaster = new THREE.Raycaster();
-      pointer = new THREE.Vector2();
-
-      window.addEventListener('resize', onWindowResize);
-      // 鼠标点击
-      renderer.domElement.addEventListener('click', onClickCanvas);
-      // 触摸轻点（简单处理：touchend 取最后位置）
-      renderer.domElement.addEventListener('touchend', onTouchEnd);
-
-      animate();
-    }
-
-    function onWindowResize() {
-      const w = container.clientWidth;
-      const h = container.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    }
-
-    function animate() {
-      requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
-    }
-
-    // ========== 加载纹理并创建球体 ==========
-    function loadTexture() {
-      const loader = new THREE.TextureLoader();
-      loader.load(
-        textureUrl,
-        (tex) => {
-          textureObj = tex;
-          createSphere(tex);
-          loadAreaImage(textureUrl);
-        },
-        undefined,
-        (err) => {
-          console.error('纹理加载失败', err);
-          if (loadingEl) loadingEl.textContent = '纹理加载失败，请检查路径和跨域设置';
-        }
-      );
-    }
-
-    function createSphere(tex) {
-      const geometry = new THREE.SphereGeometry(1, 64, 64);
-      const material = new THREE.MeshBasicMaterial({ map: tex });
-      sphere = new THREE.Mesh(geometry, material);
-      scene.add(sphere);
-    }
-
-    function loadAreaImage(url) {
-      const img = new Image();
-      img.src = url;
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        width = img.width;
-        height = img.height;
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        areaImageData = ctx.getImageData(0, 0, width, height).data;
-        areaImage = img;
-        if (loadingEl) loadingEl.style.display = 'none';
-      };
-      img.onerror = (e) => {
-        console.error('面积计算纹理加载失败', e);
-        if (loadingEl) loadingEl.textContent = '面积纹理加载失败';
-      };
+    let newHistory = [...history];
+    if (clearPreviousOptions) {
+        // 实际逻辑中不需要清除历史，但在极乐迪斯科中，旧选项通常会失效或被标记
+        // 这里我们保持历史追加模式
     }
 
-    // ========== 点击 / 触摸事件，转换为射线 ==========
-    function onClickCanvas(event) {
-      const rect = renderer.domElement.getBoundingClientRect();
-      const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-      pointer.set(x, y);
-      handlePick();
-    }
+    // 模拟逐个添加，这里简化为一次性添加，实际项目中可以做打字机效果
+    setHistory(prev => [...prev, ...node.parts]);
+    setCurrentNodeId(nodeId);
+  };
 
-    function onTouchEnd(event) {
-      if (!event.changedTouches || event.changedTouches.length === 0) return;
-      const touch = event.changedTouches[0];
-      const rect = renderer.domElement.getBoundingClientRect();
-      const x = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
-      const y = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
-      pointer.set(x, y);
-      handlePick();
-    }
-
-    function handlePick() {
-      if (!sphere || !areaImageData) return;
-
-      raycaster.setFromCamera(pointer, camera);
-      const intersects = raycaster.intersectObject(sphere);
-      if (intersects.length === 0) return;
-
-      const uv = intersects[0].uv; // {x: u, y: v}
-      if (!uv) return;
-
-      const segment = createSegmentFromUv(uv);
-      if (segment) {
-        segments.push(segment);
-        renderSegmentsList();
-      }
-    }
-
-    // ========== 从 UV 创建一个局部区域 segment ==========
-    function createSegmentFromUv(uv) {
-      // uv: {x: 0-1, y:0-1}
-      if (!areaImageData || width === 0 || height === 0) return null;
-
-      const startX = Math.floor(uv.x * (width - 1));
-      const startY = Math.floor((1 - uv.y) * (height - 1)); // 注意 three.js v=0顶部，这里反转
-
-      const idx = (startY * width + startX) * 4;
-      const baseR = areaImageData[idx];
-      const baseG = areaImageData[idx + 1];
-      const baseB = areaImageData[idx + 2];
-      const baseA = areaImageData[idx + 3];
-
-      if (baseA === 0) {
-        // 点击到透明区域，直接忽略
-        return null;
-      }
-
-      const visited = new Uint8Array(width * height);
-      const queue = [];
-      queue.push({ x: startX, y: startY });
-      visited[startY * width + startX] = 1;
-
-      // 用来计算面积
-      let sumCos = 0;
-      let pixelCount = 0;
-
-      // 限制扩散范围：UV 欧式距离
-      const maxDistSq = maxUvDistance * maxUvDistance;
-
-      // 预计算每行 cos(lat)
-      const cosLatRow = new Array(height);
-      for (let y = 0; y < height; y++) {
-        const v = y / (height - 1);
-        const lat = Math.PI * (0.5 - v);
-        cosLatRow[y] = Math.cos(lat);
-      }
-
-      const baseU = uv.x;
-      const baseV = uv.y;
-
-      while (queue.length > 0 && pixelCount < maxRegionPixels) {
-        const { x, y } = queue.shift();
-
-        // 计算该像素对应的 UV，用于距离限制
-        const u = x / (width - 1);
-        const v = 1 - y / (height - 1); // 反转回来
-        const du = u - baseU;
-        // 考虑经度环绕，可根据需要做 wrap，这里简化处理
-        const dv = v - baseV;
-        const distSq = du * du + dv * dv;
-        if (distSq > maxDistSq) {
-          continue;
-        }
-
-        const index = (y * width + x) * 4;
-        const r = areaImageData[index];
-        const g = areaImageData[index + 1];
-        const b = areaImageData[index + 2];
-        const a = areaImageData[index + 3];
-
-        if (a === 0) continue;
-        if (!colorClose(r, g, b, baseR, baseG, baseB, colorTolerance)) {
-          continue;
-        }
-
-        // 接受这个像素
-        const cosLat = cosLatRow[y];
-        sumCos += cosLat;
-        pixelCount++;
-
-        // 四邻域扩散
-        const neighbors = [
-          [x + 1, y],
-          [x - 1, y],
-          [x, y + 1],
-          [x, y - 1],
-        ];
-        for (const [nx, ny] of neighbors) {
-          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-          const key = ny * width + nx;
-          if (visited[key]) continue;
-          visited[key] = 1;
-          queue.push({ x: nx, y: ny });
-        }
-      }
-
-      if (pixelCount === 0) {
-        return null;
-      }
-
-      // 计算该局部区域占整球的比例：
-      // 整球面积 ∝ ∑_all cos(lat)，对等距矩形贴图解析值为 2 * width (积分)，
-      // 这里用数值：sumAllCos = height * 平均(cosLat) ~= (2 * width)，简化处理：
-      // 为保证稳定，我们直接用理论总面积 4πR² 对应的权重为:
-      // sum_all_cos_理论 = (积分 cos(lat) 从 -pi/2 到 pi/2) * (宽度离散) = 2 * width
-      // 但我们真正用的是：ratio = sumCos / sumCosAll
-      // 为避免多次遍历整图，这里采用解析：sumCosAll = height * (平均cos) * 宽 ≈ 2 * width
-      // 更严谨：预先算一遍 sumCosAll，这里为了简单+性能，用解析值：
-      const sumCosAll = 2 * width; // KISS + 足够精度的近似
-
-      const ratio = sumCos / sumCosAll;
-
-      return {
-        id: nextSegmentId++,
-        ratio,
-        count: pixelCount,
-        centerUv: { u: baseU, v: baseV },
-      };
-    }
-
-    function colorClose(r, g, b, br, bg, bb, tol) {
-      return (
-        Math.abs(r - br) <= tol &&
-        Math.abs(g - bg) <= tol &&
-        Math.abs(b - bb) <= tol
-      );
-    }
-
-    // ========== Segments & Groups UI 管理 ==========
-
-    function renderSegmentsList() {
-      segmentsEl.innerHTML = '';
-      if (segments.length === 0) {
-        segmentsEl.textContent = '提示: 点击球体表面任意色块，即可生成一个选区。';
-        renderGroupsResult();
-        return;
-      }
-
-      segments.forEach(seg => {
-        const div = document.createElement('div');
-        const p = (seg.ratio * 100).toFixed(4);
-        div.textContent = `#${seg.id}  区域占比: ${p}%  像素数: ${seg.count}`;
-        const btnA = document.createElement('button');
-        btnA.textContent = '加到A组';
-        btnA.className = 'small';
-        btnA.onclick = () => addToGroup('A', seg.id);
-
-        const btnB = document.createElement('button');
-        btnB.textContent = '加到B组';
-        btnB.className = 'small';
-        btnB.onclick = () => addToGroup('B', seg.id);
-
-        const btnRm = document.createElement('button');
-        btnRm.textContent = '移除';
-        btnRm.className = 'small';
-        btnRm.onclick = () => removeSegment(seg.id);
-
-        div.appendChild(btnA);
-        div.appendChild(btnB);
-        div.appendChild(btnRm);
-
-        // 显示是否在组里
-        if (groupA.includes(seg.id)) {
-          const tag = document.createElement('span');
-          tag.className = 'pill';
-          tag.textContent = 'A';
-          div.appendChild(tag);
-        }
-        if (groupB.includes(seg.id)) {
-          const tag = document.createElement('span');
-          tag.className = 'pill';
-          tag.textContent = 'B';
-          div.appendChild(tag);
-        }
-
-        segmentsEl.appendChild(div);
-      });
-
-      renderGroupsResult();
-    }
-
-    function addToGroup(group, id) {
-      if (!segments.find(s => s.id === id)) return;
-      if (group === 'A') {
-        if (!groupA.includes(id)) groupA.push(id);
-      } else {
-        if (!groupB.includes(id)) groupB.push(id);
-      }
-      renderSegmentsList();
-    }
-
-    function removeSegment(id) {
-      segments = segments.filter(s => s.id !== id);
-      groupA = groupA.filter(i => i !== id);
-      groupB = groupB.filter(i => i !== id);
-      renderSegmentsList();
-    }
-
-    function resetAll() {
-      segments = [];
-      groupA = [];
-      groupB = [];
-      nextSegmentId = 1;
-      renderSegmentsList();
-    }
-
-    function renderGroupsResult() {
-      const sumA = groupA
-        .map(id => segments.find(s => s.id === id))
-        .filter(Boolean)
-        .reduce((sum, s) => sum + s.ratio, 0);
-      const sumB = groupB
-        .map(id => segments.find(s => s.id === id))
-        .filter(Boolean)
-        .reduce((sum, s) => sum + s.ratio, 0);
-
-      const pA = (sumA * 100).toFixed(4);
-      const pB = (sumB * 100).toFixed(4);
-      const ratio = sumB > 0 ? (sumA / sumB).toFixed(4) : (sumA > 0 ? '∞' : '0');
-
-      groupsResultEl.textContent =
-        `A组总面积: ${pA}%   B组总面积: ${pB}%   A/B: ${ratio}`;
-    }
-
-    resetBtn.onclick = resetAll;
-
-    calcGroupsBtn.onclick = () => {
-      // 按当前分组计算一次（renderGroupsResult 已经实时显示，按钮只是满足你的“计算”动作）
-      renderGroupsResult();
-      // 可以加个轻微提示
-      groupsResultEl.textContent += '  (已更新)';
+  const handleOptionClick = (option: Option) => {
+    // 1. 把用户的选择加入历史
+    const userChoicePart: DialoguePart = {
+      id: Date.now().toString(),
+      speaker: '你',
+      text: option.label,
+      isOption: true,
+      skillType: 'general'
     };
-  </script>
-</body>
-</html>
+    
+    setHistory(prev => [...prev, userChoicePart]);
+    
+    // 2. 延迟一下加载下一段，模拟思考
+    setTimeout(() => {
+      pushNodeToHistory(option.nextId);
+    }, 400);
+  };
+
+  const renderText = (text: string) => {
+    // 简单的解析器，处理 *斜体* 和 **加粗**
+    // 这里的实现比较基础，仅作演示
+    return text;
+  };
+
+  const currentNode = STORY_NODES[currentNodeId];
+
+  return (
+    <div className={`flex h-screen w-full ${COLORS.background} font-serif overflow-hidden text-slate-200 selection:bg-orange-500 selection:text-white`}>
+      
+      {/* 左侧：视觉/状态栏 (在移动端隐藏或缩小) */}
+      <div className="hidden md:flex md:w-1/3 lg:w-1/4 flex-col border-r border-slate-700 bg-slate-900 relative">
+        {/* 模拟左侧的人物肖像/环境图 */}
+        <div className="h-1/2 w-full bg-gradient-to-b from-slate-800 to-slate-900 flex items-center justify-center p-6 relative overflow-hidden">
+            {/* 抽象背景 */}
+            <div className="absolute inset-0 opacity-20 bg-[url('https://www.transparenttextures.com/patterns/concrete-wall.png')]"></div>
+            <div className="w-32 h-32 md:w-48 md:h-48 rounded-full bg-slate-700 border-4 border-slate-600 shadow-2xl flex items-center justify-center overflow-hidden grayscale contrast-125">
+                 {/* 这里本应是人物肖像，用抽象色块代替 */}
+                 <div className="w-full h-full bg-gradient-to-tr from-red-900 via-slate-800 to-slate-900 opacity-80 mix-blend-multiply"></div>
+                 <span className="absolute text-slate-500 font-bold text-xl tracking-widest rotate-12">NO SIGNAL</span>
+            </div>
+        </div>
+
+        {/* 状态栏 */}
+        <div className="flex-1 p-6 flex flex-col gap-4 bg-slate-900">
+            <div className="flex items-center gap-3">
+                 <div className="w-2 h-12 bg-red-600"></div>
+                 <div>
+                     <h2 className="text-xl font-bold text-slate-200 uppercase tracking-widest">伊恩·凯利</h2>
+                     <p className="text-xs text-slate-500 uppercase">历史系学生 / 幸存者 / 嫌疑人</p>
+                 </div>
+            </div>
+            
+            <div className="mt-8 space-y-4">
+                <div className="flex justify-between items-center text-sm">
+                    <span className="text-blue-400 flex items-center gap-2"><Brain size={14}/> 逻辑思维</span>
+                    <div className="w-32 h-1 bg-slate-700"><div className="w-1/4 h-full bg-blue-500"></div></div>
+                </div>
+                <div className="flex justify-between items-center text-sm">
+                    <span className="text-purple-400 flex items-center gap-2"><Heart size={14}/> 内陆帝国</span>
+                    <div className="w-32 h-1 bg-slate-700"><div className="w-3/4 h-full bg-purple-500"></div></div>
+                </div>
+                <div className="flex justify-between items-center text-sm">
+                    <span className="text-red-400 flex items-center gap-2"><Activity size={14}/> 半影</span>
+                    <div className="w-32 h-1 bg-slate-700"><div className="w-full h-full bg-red-600 animate-pulse"></div></div>
+                </div>
+            </div>
+
+            <div className="mt-auto text-xs text-slate-600 font-mono">
+                <p>LOCATION: St. Kelly Hospital, Ward 404</p>
+                <p>TIME: 21:00 Post-Blast</p>
+            </div>
+        </div>
+      </div>
+
+      {/* 右侧：对话流 (The Tape) */}
+      <div className="flex-1 flex flex-col h-full relative bg-[url('https://www.transparenttextures.com/patterns/stardust.png')]">
+        
+        {/* 对话历史区域 */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 custom-scrollbar scroll-smooth pb-32">
+          {history.map((part, index) => (
+            <div key={`${part.id}-${index}`} className={`animate-fade-in ${part.isOption ? 'text-right' : ''}`}>
+              
+              {/* 说话人标签 */}
+              {!part.isOption && (
+                <div className="flex items-center gap-2 mb-1 uppercase tracking-wider text-xs font-bold">
+                    {part.skillType && <SkillIcon type={part.skillType} />}
+                    <span className={COLORS[part.skillType || 'general']}>
+                        {part.speaker}
+                    </span>
+                    {/* 技能检定模拟标志 */}
+                    {['intellect', 'psyche', 'physique'].includes(part.skillType || '') && (
+                         <span className="bg-slate-700 text-white px-1 rounded text-[10px]">Easy: Success</span>
+                    )}
+                </div>
+              )}
+
+              {/* 对话内容 */}
+              <div className={`
+                text-lg md:text-xl leading-relaxed max-w-3xl
+                ${part.isOption 
+                    ? 'ml-auto text-slate-400 italic pr-4 border-r-2 border-slate-600 inline-block' 
+                    : 'text-slate-200 pl-4 border-l-2 border-slate-700'}
+                ${part.skillType === 'narrator' ? 'font-sans text-base opacity-90' : 'font-serif'}
+              `}>
+                {part.text}
+              </div>
+            </div>
+          ))}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* 底部选项区域 */}
+        <div className="bg-slate-800/95 backdrop-blur border-t border-slate-600 p-4 md:p-6 shrink-0 shadow-2xl z-10">
+           <div className="max-w-3xl mx-auto flex flex-col gap-2">
+              {currentNode?.options.map((option, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => handleOptionClick(option)}
+                  className="group flex items-start gap-3 text-left p-3 hover:bg-slate-700 rounded transition-all duration-200 border border-transparent hover:border-slate-500 focus:outline-none"
+                >
+                   <span className="text-orange-500 font-bold mt-1">{idx + 1}.</span>
+                   <div className="flex-1">
+                       <span className="text-lg text-slate-100 font-medium group-hover:text-white">{option.label}</span>
+                       {option.skillCheck && (
+                           <span className={`ml-2 text-xs uppercase font-bold px-1.5 py-0.5 rounded bg-slate-900 ${COLORS[option.skillCheck.type]}`}>
+                               {option.skillCheck.difficulty}
+                           </span>
+                       )}
+                   </div>
+                </button>
+              ))}
+           </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
